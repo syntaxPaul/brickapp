@@ -14,6 +14,7 @@ backend/public/
 # Database dumps (contain real data)
 *.sql
 !database/seed.sql
+!database/perf-indexes.sql
 
 # Logs
 *.log
