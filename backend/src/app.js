@@ -1,8 +1,10 @@
 // backend/src/app.js
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const dotenv = require('dotenv');
 const http = require('http');
+const path = require('path');
 
 dotenv.config();
 
@@ -24,8 +26,9 @@ const timelineRoutes = require('./routes/timeline');
 const app = express();
 
 // Middleware
+app.use(compression());
 app.use(cors({
-    origin: 'http://localhost:3010',
+    origin: process.env.CORS_ORIGIN || 'http://localhost:3010',
     credentials: true
 }));
 app.use(express.json());
@@ -56,11 +59,28 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// Serve built frontend (production) and fall back to index.html for client-side routing
+const frontendDist = path.join(__dirname, '../public');
+app.use(express.static(frontendDist, {
+    setHeaders: (res, filePath) => {
+        // Vite's /assets files are content-hashed (new hash per build), so they're
+        // safe to cache forever. index.html is not hashed, so it must always be revalidated.
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+    }
+}));
+app.get(/^(?!\/api).*/, (req, res, next) => {
+    res.sendFile(path.join(frontendDist, 'index.html'), (err) => {
+        if (err) next();
+    });
+});
+
 // 404 handler
 app.use((req, res) => {
-    res.status(404).json({ 
+    res.status(404).json({
         error: 'Route not found',
-        path: req.originalUrl 
+        path: req.originalUrl
     });
 });
 

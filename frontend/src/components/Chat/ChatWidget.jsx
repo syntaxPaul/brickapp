@@ -60,7 +60,7 @@ export default function ChatWidget() {
     const fetchAllUsers = async () => {
         try {
             const token = localStorage.getItem('token');
-            const res = await axios.get('http://localhost:5010/api/users', {
+            const res = await axios.get('/api/users', {
                 headers: { Authorization: `Bearer ${token}` }
             });
             setAllUsers(res.data.filter(u => u.id !== user.id));

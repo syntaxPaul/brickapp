@@ -9,7 +9,7 @@ class UserModel {
                    COALESCE(json_agg(json_build_object('branch_id', bua.branch_id, 'is_primary', bua.is_primary)) FILTER (WHERE bua.branch_id IS NOT NULL), '[]') AS branches
             FROM users u
             LEFT JOIN branch_user_assignments bua ON u.id = bua.user_id
-            GROUP BY u.id
+            GROUP BY u.id, u.username, u.email, u.full_name, u.phone, u.status, u.created_at
             ORDER BY u.full_name
         `);
         console.log(`📊 Found ${result.rows.length} users`);
@@ -26,7 +26,7 @@ class UserModel {
             LEFT JOIN branch_user_assignments bua ON u.id = bua.user_id
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             WHERE u.id = $1
-            GROUP BY u.id
+            GROUP BY u.id, u.username, u.email, u.full_name, u.phone, u.status
         `, [id]);
         return result.rows[0];
     }
@@ -115,7 +115,7 @@ class UserModel {
             LEFT JOIN branch_user_assignments bua ON u.id = bua.user_id
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             WHERE u.id = $1
-            GROUP BY u.id
+            GROUP BY u.id, u.username, u.email, u.full_name, u.phone, u.status
         `, [id]);
         console.log(`📊 User with branches: ${result.rows.length} row(s) found`);
         return result.rows[0];

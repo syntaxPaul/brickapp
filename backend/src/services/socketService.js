@@ -12,7 +12,7 @@ const initializeSocket = (server) => {
         
         io = new Server(server, {
             cors: {
-                origin: 'http://localhost:3010',
+                origin: process.env.CORS_ORIGIN || 'http://localhost:3010',
                 credentials: true,
                 methods: ['GET', 'POST']
             }

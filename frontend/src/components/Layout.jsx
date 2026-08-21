@@ -55,7 +55,7 @@ function NavLink({ to, icon, label, badge, active, collapsed }) {
 }
 
 export default function Layout() {
-    const { user, logout } = useAuth();
+    const { user, logout, currentBranch } = useAuth();
     const chatContext = useChat();
     const location = useLocation();
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -399,7 +399,7 @@ export default function Layout() {
 
                 {/* Page Content */}
                 <div className="p-4 sm:p-6">
-                    <Outlet />
+                    <Outlet key={currentBranch} />
                 </div>
             </main>
 

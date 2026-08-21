@@ -13,7 +13,7 @@ export const useAuth = () => {
   return context;
 };
 
-const API_URL = 'http://localhost:5010/api';
+const API_URL = '/api';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -143,7 +143,6 @@ export const AuthProvider = ({ children }) => {
     setCurrentBranch(branchId);
     localStorage.setItem('currentBranch', branchId);
     toast.success('Branch switched successfully');
-    window.location.reload();
   };
 
   const logout = () => {

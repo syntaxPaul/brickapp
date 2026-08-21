@@ -9,6 +9,11 @@ node_modules/
 # Build output
 dist/
 build/
+backend/public/
+
+# Database dumps (contain real data)
+*.sql
+!database/seed.sql
 
 # Logs
 *.log

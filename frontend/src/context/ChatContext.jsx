@@ -14,7 +14,7 @@ export const useChat = () => {
     return context;
 };
 
-const API_URL = 'http://localhost:5010/api';
+const API_URL = '/api';
 
 export const ChatProvider = ({ children }) => {
     const [socket, setSocket] = useState(null);
@@ -46,7 +46,7 @@ export const ChatProvider = ({ children }) => {
 
         console.log('🔗 Initializing socket connection...');
         
-        const newSocket = io('http://localhost:5010', {
+        const newSocket = io({
             auth: { token },
             transports: ['websocket'],
             reconnection: true,
