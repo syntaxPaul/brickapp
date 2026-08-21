@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { invalidateUser } = require('../lib/userCache');
 const bcrypt = require('bcrypt');
 
 class UserModel {
@@ -75,11 +76,15 @@ class UserModel {
         params.push(id);
 
         const result = await pool.query(query, params);
+        // Invalidate here rather than in the controller: this is the chokepoint
+        // every write passes through, so no future call path can bypass it.
+        invalidateUser(id);
         return result.rows[0];
     }
 
     static async delete(id) {
         const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+        invalidateUser(id);
         return result.rows[0];
     }
 
@@ -92,6 +97,8 @@ class UserModel {
                 VALUES ($1, $2, $3)
             `, [userId, branch.branch_id, branch.is_primary || false]);
         }
+
+        invalidateUser(userId);
     }
 
     static async assignRoles(userId, roles) {
@@ -103,6 +110,8 @@ class UserModel {
                 VALUES ($1, $2, $3, $4)
             `, [userId, role.branch_id, role.role_name, role.permissions || '[]']);
         }
+
+        invalidateUser(userId);
     }
 
     static async getUserWithBranchesAndRoles(id) {

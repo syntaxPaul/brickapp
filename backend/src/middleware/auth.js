@@ -6,86 +6,9 @@ dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
-// ---------------------------------------------------------------------------
-// User profile cache
-// ---------------------------------------------------------------------------
-//
-// Every authenticated request used to run this three-table join with two
-// json_agg aggregations just to rebuild the caller's branches and roles. The
-// dashboard alone fires five requests in parallel, so a single page load ran
-// the same query five times over.
-//
-// The profile changes only when an admin edits a user's roles or branch
-// assignments, so we cache it briefly in process and expose an invalidation
-// hook for the code paths that do the editing. TTL is short enough that even a
-// missed invalidation self-corrects within seconds.
-
-const USER_CACHE_TTL_MS = 30 * 1000;
-const userCache = new Map();
-
-// In-flight deduplication: five parallel requests arriving on a cold cache
-// should trigger ONE query, not five. Without this the stampede on first load
-// is exactly the case we are trying to fix.
-const inFlight = new Map();
-
-const USER_QUERY = `
-    SELECT u.id, u.username, u.email, u.full_name, u.phone, u.status,
-           COALESCE(json_agg(DISTINCT jsonb_build_object('branch_id', bua.branch_id, 'is_primary', bua.is_primary)) FILTER (WHERE bua.branch_id IS NOT NULL), '[]') AS branches,
-           COALESCE(json_agg(DISTINCT jsonb_build_object('branch_id', ur.branch_id, 'role', ur.role_name, 'permissions', ur.permissions)) FILTER (WHERE ur.branch_id IS NOT NULL), '[]') AS roles
-    FROM users u
-    LEFT JOIN branch_user_assignments bua ON u.id = bua.user_id
-    LEFT JOIN user_roles ur ON u.id = ur.user_id
-    WHERE u.id = $1
-    GROUP BY u.id
-`;
-
-async function loadUser(userId) {
-    const cached = userCache.get(userId);
-    if (cached && cached.expires > Date.now()) {
-        return cached.user;
-    }
-
-    if (inFlight.has(userId)) {
-        return inFlight.get(userId);
-    }
-
-    const promise = (async () => {
-        const result = await pool.query(USER_QUERY, [userId]);
-        const user = result.rows[0] || null;
-        if (user) {
-            userCache.set(userId, { user, expires: Date.now() + USER_CACHE_TTL_MS });
-        }
-        return user;
-    })().finally(() => {
-        inFlight.delete(userId);
-    });
-
-    inFlight.set(userId, promise);
-    return promise;
-}
-
-/**
- * Drop a user's cached profile. Call this after changing their roles, branch
- * assignments, or status so the change takes effect on the next request rather
- * than up to TTL later.
- */
-function invalidateUserCache(userId) {
-    userCache.delete(Number(userId));
-    userCache.delete(String(userId));
-}
-
-function clearUserCache() {
-    userCache.clear();
-}
-
-// Keep the map from growing unbounded on a long-lived worker.
-const sweep = setInterval(() => {
-    const now = Date.now();
-    for (const [key, value] of userCache.entries()) {
-        if (value.expires <= now) userCache.delete(key);
-    }
-}, 60 * 1000);
-sweep.unref();
+// The profile cache and its invalidation live in lib/userCache so that the
+// model layer can clear entries directly - see the note in that file.
+const { loadUser, invalidateUser, clearUserCache } = require('../lib/userCache');
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -148,6 +71,7 @@ const getCurrentBranch = (req) => {
 module.exports = {
     authenticateToken,
     getCurrentBranch,
-    invalidateUserCache,
+    // Re-exported for existing callers; lib/userCache is the source of truth.
+    invalidateUserCache: invalidateUser,
     clearUserCache
 };

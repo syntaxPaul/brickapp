@@ -41,18 +41,34 @@ and bounced the user to the login page — indistinguishable from an expired tok
 
 App Service → **brickapp-app** → these are all under Settings.
 
-### Always On — this is the big one
+### Always On — already enabled, and that changes the diagnosis
 
-`Configuration → General settings → Always On → On → Save`
+You confirmed Always On was set at initial deployment. That is worth taking
+seriously, because it rules out my original explanation.
 
-Available on your B1 plan. It stops the worker being unloaded, which removes the
-46-second cold start and the 502 window that comes with it. Nothing else on this
-list matters as much.
+If the worker was not being unloaded for idleness, then the 46-second time to
+first byte and the site-wide 502/503 window were caused by the container
+**restarting** — a crash, a platform recycle, or a deploy in flight. The app
+came back on its own about two minutes later, which fits a restart rather than
+a cold start from idle.
 
-Worth being clear about one thing: Always On is not about capacity. Your earlier
-read that CPU and memory were never the bottleneck was correct — memory peaked
-around 140 MB of 1.75 GB. Always On addresses idle unloading, which happens on
-B1 no matter how much headroom you have.
+That makes the following changes the load-bearing ones, rather than nice-to-haves:
+
+- `keepAliveTimeout` (a genuine, independent cause of intermittent 502s)
+- graceful shutdown on SIGTERM, so a recycle drains instead of erroring
+- the `unhandledRejection` / `uncaughtException` handlers in `server.js`, which
+  stop one bad request taking down the whole worker
+
+**Before deploying, find out what actually restarted it.** Two places to look:
+
+```bash
+az webapp log tail --name brickapp-app --resource-group <your-rg>
+```
+
+and in the portal: `Diagnose and solve problems → Availability and Performance →
+Application Restarts` (also worth checking "Container Crash"). If the logs show a
+repeated crash, that is the real bug and none of the above fixes its cause — it
+only stops the crash from being visible to users. Send me what you find.
 
 ### Health check
 
@@ -166,6 +182,23 @@ Four separate causes, in order of size:
 
 ## 4. Deploying
 
+### Applying the patch
+
+`git am` strips carriage returns by default. Most files in this repo use CRLF
+line endings, so the stripped context no longer matches the working tree and the
+apply fails. Use:
+
+```bash
+git checkout -b perf/instant-load
+git am --keep-cr < brickapp-performance.patch
+```
+
+Do **not** normalise the patch file to LF to work around this. That would rewrite
+every line of every touched file to LF, which is both a much larger diff than
+intended and would still fail to match the CRLF content already committed.
+
+### Building and deploying
+
 ```bash
 # 1. Build the frontend into the folder the backend serves
 cd frontend
@@ -230,11 +263,20 @@ different branch never receives another's cached data, and any write clears it.
 
 ## 6. Two things to keep an eye on
 
-**The service worker is new.** It makes repeat loads instant, but it also means a
-bad deploy can be cached. The registration handles this — it activates new
-versions immediately and checks hourly — but if you ever need to disable it,
-delete `public/sw.js`, deploy, and existing workers will unregister on their next
-update check.
+**The service worker is new.** It makes repeat loads instant, but service workers
+are sticky: once installed, a bad version can outlive its own fix until a client
+hits an update check. The registration mitigates this — new versions activate
+immediately rather than waiting for every tab to close, and it re-checks hourly.
+
+On whether it earns its keep for a two-person internal tool: the argument for
+keeping it got *stronger*, not weaker, once Always On turned out to be enabled.
+The outage you hit was a restart, and restarts keep happening — deploys, platform
+maintenance. The service worker is the piece that keeps the app open and usable
+through them. But it is a defensible call either way.
+
+To remove it: delete `frontend/public/sw.js` and the `registerServiceWorker()`
+call in `src/main.jsx`, then deploy. Existing workers unregister on their next
+update check when `/sw.js` starts returning 404.
 
 **Cached data is per-device.** The stale-while-revalidate cache and the service
 worker both store API responses in the browser. Both are cleared on logout. If
