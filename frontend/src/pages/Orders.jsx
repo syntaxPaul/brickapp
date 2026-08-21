@@ -20,8 +20,6 @@ import {
     CreditCard as CreditCardIcon, Smartphone, Building
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { parseNumber, parseOrder, formatCurrency, parseOrders } from '../utils/parsers';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, 
@@ -1284,7 +1282,15 @@ export default function Orders() {
         generateSalesReport(period);
     };
 
-    const generateInvoicePDF = (order) => {
+    // jsPDF and its autotable plugin are ~670 KB - larger than the rest of the
+    // app put together, and only needed the moment someone actually exports an
+    // invoice. Loading them on demand keeps that weight off every page load.
+    const generateInvoicePDF = async (order) => {
+        const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+            import('jspdf'),
+            import('jspdf-autotable'),
+        ]);
+
         const doc = new jsPDF();
         
         doc.setFontSize(20);

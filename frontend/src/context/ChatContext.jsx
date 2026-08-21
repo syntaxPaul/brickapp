@@ -1,6 +1,5 @@
 //frontend/src/context/ChatContext.jsx
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
@@ -39,20 +38,39 @@ export const ChatProvider = ({ children }) => {
 
     // Initialize Socket.io connection
     useEffect(() => {
-        if (!token) {
-            console.log('🔗 No token, skipping socket connection');
-            return;
-        }
+        if (!token) return;
 
-        console.log('🔗 Initializing socket connection...');
-        
-        const newSocket = io({
-            auth: { token },
-            transports: ['websocket'],
-            reconnection: true,
-            reconnectionAttempts: 5,
-            reconnectionDelay: 1000
+        // socket.io-client is loaded on demand so it stays off the critical
+        // path - chat connects a moment after the app is already usable.
+        let newSocket = null;
+        let cancelled = false;
+
+        import('socket.io-client').then(({ io }) => {
+            if (cancelled) return;
+
+            newSocket = io({
+                auth: { token },
+                // Websocket first, but keep polling as a fallback. With only
+                // websocket configured, a failed upgrade left chat permanently
+                // dead until the page was reloaded.
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                // A cold start can take the better part of a minute. Giving up
+                // after five tries meant chat never came back on its own.
+                reconnectionAttempts: Infinity,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 10000,
+                randomizationFactor: 0.5,
+                timeout: 20000
+            });
+
+            attachHandlers(newSocket);
+            setSocket(newSocket);
+        }).catch(() => {
+            // Chat is optional; the rest of the app must not care.
         });
+
+        function attachHandlers(newSocket) {
 
         newSocket.on('connect', () => {
             console.log('🔗 Socket connected');
@@ -138,11 +156,11 @@ export const ChatProvider = ({ children }) => {
             fetchUnreadCount();
         });
 
-        setSocket(newSocket);
+        }
 
         return () => {
-            console.log('🔌 Closing socket connection');
-            newSocket.close();
+            cancelled = true;
+            if (newSocket) newSocket.close();
         };
     }, [token]);
 

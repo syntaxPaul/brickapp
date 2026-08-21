@@ -1,88 +1,79 @@
 //frontend/src/pages/Dashboard.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';  // ADD THIS IMPORT
-import axios from 'axios';
 import { motion } from 'framer-motion';
 import { 
     TrendingUp, TrendingDown, Package, DollarSign, AlertCircle, 
-    ShoppingCart, Calendar, Loader2, Truck, CheckCircle, Clock,
+    ShoppingCart, Calendar, Truck, CheckCircle, Clock,
     BarChart3, PieChart, ArrowUpRight, ArrowDownRight, Plus,
     FileText, Users, Building2
 } from 'lucide-react';
-import toast from 'react-hot-toast';
-import RevenueChart from '../components/Charts/RevenueChart';
-import ProductPerformanceChart from '../components/Charts/ProductPerformanceChart';
-import ExpensePieChart from '../components/Charts/ExpensePieChart';
+// recharts is ~360 KB and sits below the fold. Loading the chart components
+// lazily lets the headline figures paint immediately while the charting library
+// arrives in the background.
+const RevenueChart = lazy(() => import('../components/Charts/RevenueChart'));
+const ProductPerformanceChart = lazy(() => import('../components/Charts/ProductPerformanceChart'));
+const ExpensePieChart = lazy(() => import('../components/Charts/ExpensePieChart'));
+
+const ChartFallback = () => (
+    <div className="animate-pulse bg-gray-200/70 rounded" style={{ height: 220 }} />
+);
 import { parseNumber, parseIntSafe, parseStats, parseOrders, formatCurrency } from '../utils/parsers';
+import { useApi } from '../hooks/useQuery';
+import { SkeletonStatCards, SkeletonTable } from '../components/Skeletons';
 
 export default function Dashboard() {
-    const [stats, setStats] = useState({
-        total_orders: 0,
-        total_revenue: 0,
-        total_expenses: 0,
-        total_wastage_cost: 0,
-        stock_alerts: [],
-        delivery_stats: {
-            total_trips: 0,
-            completed_trips: 0,
-            in_progress_trips: 0,
-            scheduled_trips: 0
-        }
-    });
-    const [recentOrders, setRecentOrders] = useState([]);
-    const [revenueData, setRevenueData] = useState([]);
-    const [productSales, setProductSales] = useState([]);
-    const [expenseCategories, setExpenseCategories] = useState([]);
-    const [loading, setLoading] = useState(true);
+    // Each panel is its own query. Two consequences that matter:
+    //
+    //  1. They fail independently. The old Promise.all meant one 502 on any of
+    //     the five calls blanked the entire dashboard; now a struggling endpoint
+    //     costs you that one card.
+    //  2. Each paints from cache on the first render, so returning to the
+    //     dashboard shows last-known figures instantly and updates underneath.
+    const statsQuery = useApi('/api/dashboard/stats', { refreshMs: 60000 });
+    const ordersQuery = useApi('/api/dashboard/recent-orders', { refreshMs: 60000 });
+    const revenueQuery = useApi('/api/dashboard/chart-revenue-expenses');
+    const productQuery = useApi('/api/dashboard/chart-product-sales');
+    const expenseQuery = useApi('/api/dashboard/chart-expense-categories');
 
-    useEffect(() => {
-        fetchDashboardData();
-    }, []);
-
-    const fetchDashboardData = async () => {
-        try {
-            const [statsRes, ordersRes, revenueRes, productRes, expenseRes] = await Promise.all([
-                axios.get('/api/dashboard/stats'),
-                axios.get('/api/dashboard/recent-orders'),
-                axios.get('/api/dashboard/chart-revenue-expenses'),
-                axios.get('/api/dashboard/chart-product-sales'),
-                axios.get('/api/dashboard/chart-expense-categories')
-            ]);
-            
-            setStats(parseStats(statsRes.data));
-            setRecentOrders(parseOrders(ordersRes.data));
-            setRevenueData(revenueRes.data.map(item => ({
+    const stats = useMemo(
+        () => parseStats(statsQuery.data || {}),
+        [statsQuery.data]
+    );
+    const recentOrders = useMemo(
+        () => parseOrders(ordersQuery.data || []),
+        [ordersQuery.data]
+    );
+    const revenueData = useMemo(
+        () =>
+            (revenueQuery.data || []).map((item) => ({
                 ...item,
                 revenue: parseNumber(item.revenue),
-                expenses: parseNumber(item.expenses)
-            })));
-            setProductSales(productRes.data.map(item => ({
+                expenses: parseNumber(item.expenses),
+            })),
+        [revenueQuery.data]
+    );
+    const productSales = useMemo(
+        () =>
+            (productQuery.data || []).map((item) => ({
                 ...item,
                 total_sold: parseIntSafe(item.total_sold),
-                total_revenue: parseNumber(item.total_revenue)
-            })));
-            setExpenseCategories(expenseRes.data.map(item => ({
+                total_revenue: parseNumber(item.total_revenue),
+            })),
+        [productQuery.data]
+    );
+    const expenseCategories = useMemo(
+        () =>
+            (expenseQuery.data || []).map((item) => ({
                 ...item,
-                total: parseNumber(item.total)
-            })));
-        } catch (error) {
-            toast.error('Failed to load dashboard data');
-            console.error(error);
-        } finally {
-            setLoading(false);
-        }
-    };
+                total: parseNumber(item.total),
+            })),
+        [expenseQuery.data]
+    );
 
-    if (loading) {
-        return (
-            <div className="flex items-center justify-center h-[60vh]">
-                <div className="text-center">
-                    <Loader2 size={48} className="animate-spin text-blue-600 mx-auto mb-4" />
-                    <p className="text-gray-500">Loading dashboard...</p>
-                </div>
-            </div>
-        );
-    }
+    // "Loading" now means only: we have never successfully loaded these figures
+    // on this device. Any cached copy skips this entirely.
+    const showStatsSkeleton = statsQuery.isLoading;
 
     const profit = stats.total_revenue - stats.total_expenses;
     const profitMargin = stats.total_revenue > 0 ? (profit / stats.total_revenue * 100) : 0;
@@ -115,7 +106,7 @@ export default function Dashboard() {
             </div>
 
             {/* Stats Grid */}
-            <div className="grid-stats">
+            {showStatsSkeleton ? <SkeletonStatCards /> : <div className="grid-stats">
                 <motion.div whileHover={{ y: -2 }} className="stat-card">
                     <div className="flex items-center justify-between">
                         <div>
@@ -179,7 +170,7 @@ export default function Dashboard() {
                         </div>
                     </div>
                 </motion.div>
-            </div>
+            </div>}
 
             {/* Quick Actions */}
             <div className="flex flex-wrap gap-3 mb-6">
@@ -210,7 +201,9 @@ export default function Dashboard() {
                         <span className="text-xs text-gray-400">Last 6 months</span>
                     </div>
                     <div className="card-body">
-                        <RevenueChart data={revenueData} />
+                        {revenueQuery.isLoading
+                            ? <ChartFallback />
+                            : <Suspense fallback={<ChartFallback />}><RevenueChart data={revenueData} /></Suspense>}
                     </div>
                 </div>
                 <div className="card">
@@ -222,7 +215,9 @@ export default function Dashboard() {
                         <span className="text-xs text-gray-400">This month</span>
                     </div>
                     <div className="card-body">
-                        <ExpensePieChart data={expenseCategories} />
+                        {expenseQuery.isLoading
+                            ? <ChartFallback />
+                            : <Suspense fallback={<ChartFallback />}><ExpensePieChart data={expenseCategories} /></Suspense>}
                     </div>
                 </div>
             </div>
@@ -239,7 +234,9 @@ export default function Dashboard() {
                         <span className="text-xs text-gray-400">By revenue</span>
                     </div>
                     <div className="card-body">
-                        <ProductPerformanceChart data={productSales} />
+                        {productQuery.isLoading
+                            ? <ChartFallback />
+                            : <Suspense fallback={<ChartFallback />}><ProductPerformanceChart data={productSales} /></Suspense>}
                     </div>
                 </div>
 
@@ -292,6 +289,7 @@ export default function Dashboard() {
                     </Link>
                 </div>
                 <div className="card-body p-0">
+                    {ordersQuery.isLoading ? <SkeletonTable rows={5} cols={5} /> : (
                     <div className="table-container">
                         <table className="table">
                             <thead>
@@ -325,6 +323,7 @@ export default function Dashboard() {
                             </tbody>
                         </table>
                     </div>
+                    )}
                 </div>
             </div>
         </div>

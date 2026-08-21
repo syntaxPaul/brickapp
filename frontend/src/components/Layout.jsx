@@ -4,6 +4,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useChat } from '../context/ChatContext';
 import BranchSelector from './BranchSelector';
+import { prefetchHandlers } from '../lib/prefetch';
 import {
     LayoutDashboard,
     Package,
@@ -33,9 +34,12 @@ import {
 } from 'lucide-react';
 
 function NavLink({ to, icon, label, badge, active, collapsed }) {
+    // Hovering a link starts downloading that page's code and first data call,
+    // so by the time the click lands there is usually nothing left to fetch.
     return (
         <Link
             to={to}
+            {...prefetchHandlers(to)}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
                 active 
                     ? 'bg-blue-600/20 text-blue-400 shadow-lg shadow-blue-600/10' 
@@ -403,10 +407,6 @@ export default function Layout() {
                 </div>
             </main>
 
-            {/* Debug Chat Status - Remove this after testing */}
-            <div className="fixed bottom-4 left-4 z-50 text-xs bg-black/80 text-white px-3 py-1.5 rounded-full">
-                Chat: {isConnected ? '🟢' : '🔴'} {unreadCount} unread
-            </div>
         </div>
     );
 }

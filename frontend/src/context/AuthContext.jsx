@@ -1,7 +1,10 @@
 //frontend/src/context/AuthContext.jsx
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { on } from '../lib/authEvents';
+import { clearCache } from '../lib/cache';
+import { clearApiCache } from '../lib/registerServiceWorker';
 
 const AuthContext = createContext();
 
@@ -14,53 +17,127 @@ export const useAuth = () => {
 };
 
 const API_URL = '/api';
+const USER_CACHE_KEY = 'bapp:user';
+
+// Read the last known user synchronously so the very first render already has a
+// session. Previously the app showed a full-screen "Loading BrickApp..." spinner
+// on every single load while /auth/me made a round trip - that round trip is
+// still made, but in the background, and the UI no longer waits for it.
+function readCachedUser() {
+  try {
+    const raw = localStorage.getItem(USER_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistUser(user) {
+  try {
+    if (user) {
+      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(user));
+      localStorage.setItem('userId', String(user.id));
+    } else {
+      localStorage.removeItem(USER_CACHE_KEY);
+      localStorage.removeItem('userId');
+    }
+  } catch {
+    /* private mode - non-fatal */
+  }
+}
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [token, setToken] = useState(localStorage.getItem('token'));
-  const [branches, setBranches] = useState([]);
-  const [currentBranch, setCurrentBranch] = useState(null);
+  const storedToken = localStorage.getItem('token');
+  const cachedUser = storedToken ? readCachedUser() : null;
 
-  // Axios interceptor for adding token
-  useEffect(() => {
-    const interceptor = axios.interceptors.request.use(
-      (config) => {
-        const token = localStorage.getItem('token');
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-        }
-        const branchId = localStorage.getItem('currentBranch');
-        if (branchId) {
-          config.headers['x-branch-id'] = branchId;
-        }
-        console.log('📤 API Request:', config.method.toUpperCase(), config.url);
-        return config;
-      },
-      (error) => {
-        console.error('📤 Request Error:', error);
-        return Promise.reject(error);
-      }
-    );
+  const [user, setUser] = useState(cachedUser);
+  // Only block the UI when we have a token but no idea who it belongs to.
+  const [loading, setLoading] = useState(Boolean(storedToken) && !cachedUser);
+  const [token, setToken] = useState(storedToken);
+  const [branches, setBranches] = useState(cachedUser?.branches || []);
+  const [currentBranch, setCurrentBranch] = useState(() => {
+    const saved = localStorage.getItem('currentBranch');
+    return saved ? parseInt(saved, 10) : null;
+  });
+  const [degraded, setDegraded] = useState(false);
 
-    return () => axios.interceptors.request.eject(interceptor);
+  const applyUser = useCallback((data, branchList) => {
+    setUser(data);
+    persistUser(data);
+
+    const list = branchList || data?.branches || [];
+    setBranches(list);
+
+    // Only pick a branch if we do not already have a valid one, so a background
+    // refresh never yanks the user out of the branch they are looking at.
+    const saved = localStorage.getItem('currentBranch');
+    const savedId = saved ? parseInt(saved, 10) : null;
+    const savedStillValid = savedId && list.some((b) => b.branch_id === savedId);
+
+    if (savedStillValid) {
+      setCurrentBranch(savedId);
+      return;
+    }
+
+    const primary = list.find((b) => b.is_primary) || list[0];
+    if (primary) {
+      setCurrentBranch(primary.branch_id);
+      localStorage.setItem('currentBranch', primary.branch_id);
+    }
   }, []);
 
-  // Axios response interceptor for debugging
-  useEffect(() => {
-    const interceptor = axios.interceptors.response.use(
-      (response) => {
-        console.log('📥 API Response:', response.status, response.config.url);
-        return response;
-      },
-      (error) => {
-        console.error('📥 Response Error:', error.response?.status, error.response?.data || error.message);
-        return Promise.reject(error);
-      }
-    );
-
-    return () => axios.interceptors.response.eject(interceptor);
+  const logout = useCallback((message = 'Logged out successfully') => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('currentBranch');
+    persistUser(null);
+    clearCache();
+    clearApiCache();
+    setToken(null);
+    setUser(null);
+    setBranches([]);
+    setCurrentBranch(null);
+    if (message) toast.success(message);
   }, []);
+
+  // The HTTP layer decides what counts as a real authentication failure. A 502
+  // or a database blip no longer reaches this handler, which is what used to
+  // throw people back to the login screen mid-session.
+  useEffect(() => {
+    return on('unauthorized', () => {
+      if (localStorage.getItem('token')) {
+        logout('Your session expired. Please sign in again.');
+      }
+    });
+  }, [logout]);
+
+  useEffect(() => on('offline', () => setDegraded(true)), []);
+  useEffect(() => on('online', () => setDegraded(false)), []);
+
+  const fetchUser = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API_URL}/auth/me`);
+      applyUser(res.data, res.data.branches);
+    } catch (error) {
+      const status = error.response?.status;
+      const code = error.response?.data?.code;
+
+      const isAuthFailure =
+        status === 401 &&
+        (!code || ['NO_TOKEN', 'TOKEN_EXPIRED', 'TOKEN_INVALID', 'USER_NOT_FOUND'].includes(code));
+
+      if (isAuthFailure) {
+        logout('Your session expired. Please sign in again.');
+        return;
+      }
+
+      // Anything else is the server having a bad moment. Keep the cached
+      // session and carry on - the request layer is already retrying, and the
+      // next successful call will refresh this.
+      console.warn('Could not refresh user profile; keeping cached session.', status || error.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [applyUser, logout]);
 
   useEffect(() => {
     if (token) {
@@ -68,65 +145,29 @@ export const AuthProvider = ({ children }) => {
     } else {
       setLoading(false);
     }
-  }, [token]);
-
-  const fetchUser = async () => {
-    try {
-      console.log('🔍 Fetching user data...');
-      const res = await axios.get(`${API_URL}/auth/me`);
-      console.log('✅ User data received:', res.data);
-      setUser(res.data);
-      setBranches(res.data.branches || []);
-      
-      const primary = res.data.branches?.find(b => b.is_primary);
-      if (primary) {
-        setCurrentBranch(primary.branch_id);
-        localStorage.setItem('currentBranch', primary.branch_id);
-      } else if (res.data.branches?.length > 0) {
-        setCurrentBranch(res.data.branches[0].branch_id);
-        localStorage.setItem('currentBranch', res.data.branches[0].branch_id);
-      }
-    } catch (error) {
-      console.error('❌ Failed to fetch user:', error.response?.data || error.message);
-      logout();
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [token, fetchUser]);
 
   const login = async (username, password) => {
-    console.log('🔐 Login attempt:', username);
     try {
-      const res = await axios.post(`${API_URL}/auth/login`, { username, password });
-      console.log('✅ Login response:', res.data);
-      
-      const { token, user, branches } = res.data;
-      
-      localStorage.setItem('token', token);
-      setToken(token);
-      setUser(user);
-      setBranches(branches || []);
-      
-      const primary = branches?.find(b => b.is_primary);
-      if (primary) {
-        setCurrentBranch(primary.branch_id);
-        localStorage.setItem('currentBranch', primary.branch_id);
-      } else if (branches?.length > 0) {
-        setCurrentBranch(branches[0].branch_id);
-        localStorage.setItem('currentBranch', branches[0].branch_id);
-      }
-      
-      toast.success(`Welcome ${user.full_name || user.username}!`);
+      const res = await axios.post(`${API_URL}/auth/login`, { username, password }, { __noRetry: false });
+
+      const { token: newToken, user: userData, branches: branchList } = res.data;
+
+      localStorage.setItem('token', newToken);
+      setToken(newToken);
+      applyUser(userData, branchList || []);
+
+      toast.success(`Welcome ${userData.full_name || userData.username}!`);
       return { success: true };
     } catch (error) {
-      console.error('❌ Login error:', error.response?.data || error.message);
-      
-      if (error.response?.status === 401) {
+      const status = error.response?.status;
+
+      if (status === 401) {
         toast.error('Invalid username or password');
-      } else if (error.response?.status === 500) {
-        toast.error('Server error. Check backend logs.');
+      } else if (status === 503 || status === 502 || status === 504) {
+        toast.error('Server is starting up. Please try again in a moment.');
       } else if (error.code === 'ERR_NETWORK') {
-        toast.error('Cannot connect to server. Make sure backend is running on port 5010.');
+        toast.error('Cannot reach the server. Check your connection.');
       } else {
         toast.error(error.response?.data?.error || 'Login failed');
       }
@@ -135,7 +176,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const switchBranch = (branchId) => {
-    const hasAccess = branches.some(b => b.branch_id === branchId);
+    const hasAccess = branches.some((b) => b.branch_id === branchId);
     if (!hasAccess) {
       toast.error('You do not have access to this branch');
       return;
@@ -145,38 +186,30 @@ export const AuthProvider = ({ children }) => {
     toast.success('Branch switched successfully');
   };
 
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('currentBranch');
-    setToken(null);
-    setUser(null);
-    setBranches([]);
-    setCurrentBranch(null);
-    toast.success('Logged out successfully');
-  };
-
   const hasPermission = (permission) => {
     if (!user) return false;
-    const branchRoles = user.roles?.filter(r => r.branch_id === currentBranch) || [];
-    return branchRoles.some(r => 
-      r.permissions?.includes('*') || 
-      r.permissions?.includes(permission)
+    const branchRoles = user.roles?.filter((r) => r.branch_id === currentBranch) || [];
+    return branchRoles.some(
+      (r) => r.permissions?.includes('*') || r.permissions?.includes(permission)
     );
   };
 
   return (
-    <AuthContext.Provider value={{
-      user,
-      loading,
-      login,
-      logout,
-      token,
-      branches,
-      currentBranch,
-      switchBranch,
-      hasPermission,
-      setCurrentBranch
-    }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        login,
+        logout,
+        token,
+        branches,
+        currentBranch,
+        switchBranch,
+        hasPermission,
+        setCurrentBranch,
+        degraded,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
